@@ -1,0 +1,30 @@
+.DS_Store
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Build output
+build/
+dist/
+*.pkg
+AndroidTools.spec
+
+# Runtime/downloaded tools
+platform-tools/
+jdk/
+runtime/
+bundletool-all-*.jar
+bundletool-*.jar
+bundletool-libs/
+
+# Generated/download temp files
+*.download
+*.zip
+*.tar.gz
+
+# Local output
+logs/
+screenshot/
+*.log
