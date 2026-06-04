@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -46,6 +47,15 @@ def get_base_dir() -> Path:
 
 
 BASE_DIR = get_base_dir()
+
+
+def get_writable_data_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path.home() / "Library" / "Application Support" / "AndroidTools"
+    return BASE_DIR
+
+
+DATA_DIR = get_writable_data_dir()
 SCREENSHOT_DIR = BASE_DIR / "screenshot"
 RECORD_DIR = BASE_DIR / "movies"
 APKS_OUTPUT_DIR = BASE_DIR / "output"
@@ -90,6 +100,10 @@ AAPT2_JAR_URL = f"https://dl.google.com/dl/android/maven2/com/android/tools/buil
 KEYSTORE_NAME = "debug.keystore"
 KEY_ALIAS = "androiddebugkey"
 KEY_PASS = "android"
+ADVERTISING_ID_RE = re.compile(
+    r"\b[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\b"
+)
+ZERO_ADVERTISING_ID = "00000000-0000-0000-0000-000000000000"
 
 UI_BG = "#FFFFFF"
 UI_PANEL = "#FFFFFF"
@@ -175,6 +189,31 @@ def resource_file(name: str) -> Path | None:
     return None
 
 
+def resource_dir_path(name: str) -> Path | None:
+    for resource_dir in get_resource_dirs():
+        candidate = resource_dir / name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def jdk_resource_names() -> list[str]:
+    machine = platform.machine().lower()
+    if machine in {"arm64", "aarch64"}:
+        return ["jdk-arm64", "jdk"]
+    if machine in {"x86_64", "amd64"}:
+        return ["jdk-x86_64", "jdk-x64", "jdk"]
+    return ["jdk"]
+
+
+def bundled_jdk_bin_candidates(binary_name: str) -> list[Path]:
+    candidates: list[Path] = []
+    for resource_dir in get_resource_dirs():
+        for jdk_name in jdk_resource_names():
+            candidates.append(resource_dir / jdk_name / "Contents" / "Home" / "bin" / binary_name)
+    return candidates
+
+
 def resolve_icon_path() -> Path | None:
     for icon_name in ("Android.ico", "android.ico"):
         icon_path = resource_file(icon_name)
@@ -210,10 +249,10 @@ def is_working_java_binary(candidate: str | Path | None) -> bool:
 
 
 def resolve_adb_path() -> str | None:
-    candidates = [
+    candidates: list[str | Path | None] = [
+        *(resource_dir / "platform-tools" / "adb" for resource_dir in get_resource_dirs()),
+        BASE_DIR.parent / "platform-tools" / "adb",
         which("adb"),
-        str(BASE_DIR / "platform-tools" / "adb"),
-        str(BASE_DIR.parent / "platform-tools" / "adb"),
         str(Path.home() / "Library/Android/sdk/platform-tools/adb"),
         "/opt/homebrew/bin/adb",
         "/usr/local/bin/adb",
@@ -226,8 +265,8 @@ def resolve_adb_path() -> str | None:
 
 def resolve_java_path() -> str | None:
     candidates: list[str | Path | None] = [
-        BASE_DIR / "jdk" / "Contents" / "Home" / "bin" / "java",
-        BASE_DIR / "runtime" / "jdk" / "Contents" / "Home" / "bin" / "java",
+        *bundled_jdk_bin_candidates("java"),
+        *(resource_dir / "runtime" / "jdk" / "Contents" / "Home" / "bin" / "java" for resource_dir in get_resource_dirs()),
         Path(which("java")) if which("java") else None,
         "/opt/homebrew/opt/openjdk/bin/java",
         "/usr/local/opt/openjdk/bin/java",
@@ -242,8 +281,8 @@ def resolve_java_path() -> str | None:
 
 def resolve_keytool_path() -> str | None:
     candidates: list[str | Path | None] = [
-        BASE_DIR / "jdk" / "Contents" / "Home" / "bin" / "keytool",
-        BASE_DIR / "runtime" / "jdk" / "Contents" / "Home" / "bin" / "keytool",
+        *bundled_jdk_bin_candidates("keytool"),
+        *(resource_dir / "runtime" / "jdk" / "Contents" / "Home" / "bin" / "keytool" for resource_dir in get_resource_dirs()),
         Path(which("keytool")) if which("keytool") else None,
         "/opt/homebrew/opt/openjdk/bin/keytool",
         "/usr/local/opt/openjdk/bin/keytool",
@@ -261,15 +300,16 @@ def resolve_aapt_path() -> str | None:
     if direct and Path(direct).is_file():
         return direct
 
-    local_aapt2 = BASE_DIR / "aapt2" / "aapt2"
-    if local_aapt2.is_file():
-        return str(local_aapt2)
+    for resource_dir in get_resource_dirs():
+        local_aapt2 = resource_dir / "aapt2" / "aapt2"
+        if local_aapt2.is_file():
+            return str(local_aapt2)
 
-    local_build_tools = BASE_DIR / "build-tools"
-    if local_build_tools.is_dir():
-        for candidate in sorted(local_build_tools.glob("*/aapt"), reverse=True):
-            if candidate.is_file():
-                return str(candidate)
+        local_build_tools = resource_dir / "build-tools"
+        if local_build_tools.is_dir():
+            for candidate in sorted(local_build_tools.glob("*/aapt"), reverse=True):
+                if candidate.is_file():
+                    return str(candidate)
 
     sdk_build_tools = Path.home() / "Library/Android/sdk/build-tools"
     if sdk_build_tools.is_dir():
@@ -297,7 +337,7 @@ def run_command(cmd: list[str], *, timeout: int | None = None) -> subprocess.Com
             text=True,
             check=False,
             timeout=timeout,
-        )
+    )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout.decode(errors="ignore") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         stderr = exc.stderr.decode(errors="ignore") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
@@ -307,6 +347,10 @@ def run_command(cmd: list[str], *, timeout: int | None = None) -> subprocess.Com
             stdout=stdout,
             stderr=stderr or f"命令超时：{' '.join(cmd)}",
         )
+
+
+def run_adb_text(cmd: list[str], *, timeout: int | None = None) -> subprocess.CompletedProcess:
+    return run_command([adb_path or "adb", *cmd], timeout=timeout)
 
 
 def set_status(text: str, *, tone: str = "neutral") -> None:
@@ -346,6 +390,20 @@ def post_install_log(text: str) -> None:
     ui_root.after(0, append_install_log, text)
 
 
+def post_status(text: str, *, tone: str = "neutral") -> None:
+    if ui_root is None:
+        return
+    ui_root.after(0, lambda: set_status(text, tone=tone))
+
+
+def copy_text_to_clipboard(text: str) -> None:
+    if ui_root is None:
+        return
+    ui_root.clipboard_clear()
+    ui_root.clipboard_append(text)
+    ui_root.update_idletasks()
+
+
 def set_selected_file(text: str) -> None:
     if selected_file_var is not None:
         selected_file_var.set(text)
@@ -370,6 +428,11 @@ def format_size(size_bytes: int) -> str:
 def extract_with_regex(pattern: str, text: str) -> str:
     match = re.search(pattern, text)
     return match.group(1) if match else "-"
+
+
+def extract_advertising_id(text: str) -> str | None:
+    match = ADVERTISING_ID_RE.search(text)
+    return match.group(0).lower() if match else None
 
 
 def clean_bundletool_output(text: str) -> str:
@@ -797,7 +860,8 @@ def ensure_bundletool_available() -> Path | None:
         append_install_log(f"[步骤] 已检测到 bundletool：{existing}")
         return existing
 
-    target = BASE_DIR / JAR_NAME
+    ensure_dir(DATA_DIR)
+    target = DATA_DIR / JAR_NAME
     temp_target = target.with_suffix(".jar.download")
     append_install_log(f"[步骤] 未检测到 {JAR_NAME}，开始自动下载...")
 
@@ -869,24 +933,28 @@ def build_bundletool_java_cmd(java_path: str, jar_path: Path) -> list[str]:
         return [java_path, "-jar", str(jar_path)]
 
     class_path_items = [str(jar_path)]
-    libs_dir = BASE_DIR / "bundletool-libs"
-    libs_dir.mkdir(parents=True, exist_ok=True)
+    bundled_libs_dir = resource_dir_path("bundletool-libs")
+    writable_libs_dir = DATA_DIR / "bundletool-libs"
 
     class_path_decl = manifest_attrs.get("Class-Path", "").strip()
     if class_path_decl:
         for jar_name in class_path_decl.split():
-            lib_target = libs_dir / jar_name
+            bundled_target = bundled_libs_dir / jar_name if bundled_libs_dir is not None else None
+            lib_target = bundled_target if bundled_target is not None and bundled_target.is_file() else writable_libs_dir / jar_name
             if not lib_target.is_file():
                 url = BUNDLETOOL_LIB_URLS.get(jar_name)
                 if url is None:
                     raise RuntimeError(f"缺少 bundletool 依赖：{jar_name}")
+                writable_libs_dir.mkdir(parents=True, exist_ok=True)
                 append_install_log(f"[步骤] 正在下载 bundletool 依赖：{jar_name}")
                 download_file(url, lib_target)
             class_path_items.append(str(lib_target))
 
     for jar_name, url in BUNDLETOOL_EXTRA_LIB_URLS.items():
-        lib_target = libs_dir / jar_name
+        bundled_target = bundled_libs_dir / jar_name if bundled_libs_dir is not None else None
+        lib_target = bundled_target if bundled_target is not None and bundled_target.is_file() else writable_libs_dir / jar_name
         if not lib_target.is_file():
+            writable_libs_dir.mkdir(parents=True, exist_ok=True)
             append_install_log(f"[步骤] 正在下载额外运行时依赖：{jar_name}")
             download_file(url, lib_target)
         class_path_items.append(str(lib_target))
@@ -899,7 +967,7 @@ def ensure_aapt2_available() -> str | None:
     if existing is not None:
         return existing
 
-    aapt2_dir = BASE_DIR / "aapt2"
+    aapt2_dir = DATA_DIR / "aapt2"
     ensure_dir(aapt2_dir)
     jar_target = aapt2_dir / f"aapt2-{AAPT2_VERSION}-osx.jar"
     temp_target = jar_target.with_suffix(".jar.download")
@@ -936,7 +1004,8 @@ def ensure_keystore(keytool_path: str) -> Path | None:
     if toolkit_candidate.is_file():
         return toolkit_candidate
 
-    generated_path = BASE_DIR / KEYSTORE_NAME
+    ensure_dir(DATA_DIR)
+    generated_path = DATA_DIR / KEYSTORE_NAME
     result = subprocess.run(
         [
             keytool_path,
@@ -1121,6 +1190,136 @@ def run_extract_ios_app_log(device_identifier: str, device_name: str, bundle_id:
         if ui_root is not None:
             ui_root.after(0, lambda: set_status("iOS 日志提取异常", tone="error"))
             ui_root.after(0, append_install_log, f"[异常] iOS 日志提取失败：{exc}")
+
+
+def choose_output_idfa() -> None:
+    append_install_log("")
+    append_install_log("[选择] 输出 IDFA / 广告 ID")
+    set_status("正在读取 IDFA / 广告 ID…")
+    threading.Thread(target=run_output_idfa, daemon=True).start()
+
+
+def run_output_idfa() -> None:
+    if has_android_device_connected():
+        run_output_android_advertising_id()
+        return
+
+    ios_device = resolve_ios_device_identifier()
+    if ios_device is not None:
+        device_identifier, device_name = ios_device
+        post_install_log(f"[设备] iOS 真机：{device_name} / {device_identifier}")
+        post_install_log("[提示] iOS 的 IDFA 只能由 App 通过系统 API 在获得用户授权后读取，Mac 侧工具无法直接从真机导出真实 IDFA。")
+        post_install_log("[建议] 如需测试 IDFA，请在目标 App 内增加调试入口或日志输出，再用“提取当前应用日志”查看。")
+        post_status("iOS 无法从 Mac 侧直接读取 IDFA", tone="error")
+        return
+
+    post_install_log("[异常] 未检测到可用的 Android 设备或 iOS 真机。")
+    post_status("未检测到可用设备", tone="error")
+
+
+def run_output_android_advertising_id() -> None:
+    global adb_path
+
+    adb_path = resolve_adb_path()
+    if not adb_path:
+        post_install_log("[异常] 未找到 adb，无法读取 Android 广告 ID。")
+        post_status("未找到 adb", tone="error")
+        return
+
+    post_install_log("[设备] Android 设备已连接，开始尝试读取广告 ID。")
+    post_install_log("[提示] 请先解锁 Android 设备屏幕，并保持亮屏；锁屏状态下无法读取广告设置页里的 IDFA/广告 ID。")
+    commands = [
+        (["shell", "settings", "get", "secure", "advertising_id"], "settings secure advertising_id"),
+        (["shell", "settings", "get", "global", "advertising_id"], "settings global advertising_id"),
+        (["shell", "settings", "get", "secure", "adid"], "settings secure adid"),
+        (
+            [
+                "shell",
+                "content",
+                "query",
+                "--uri",
+                "content://com.google.android.gms.ads.identifier/advertising_id",
+            ],
+            "Google Play Services advertising_id provider",
+        ),
+    ]
+
+    last_outputs: list[str] = []
+    for cmd, label in commands:
+        result = run_adb(cmd)
+        output = (result.stdout + result.stderr).decode(errors="ignore").strip()
+        if output:
+            last_outputs.append(f"{label}: {output}")
+        advertising_id = extract_advertising_id(output)
+        if advertising_id and advertising_id != ZERO_ADVERTISING_ID:
+            if ui_root is not None:
+                ui_root.after(0, copy_text_to_clipboard, advertising_id)
+            post_install_log(f"[完成] Android 广告 ID：{advertising_id}")
+            post_install_log("[完成] 已复制到剪贴板。")
+            post_status("广告 ID 已输出并复制", tone="success")
+            return
+        if advertising_id == ZERO_ADVERTISING_ID:
+            post_install_log("[提示] 设备返回了全 0 广告 ID，可能是用户关闭了广告 ID 或系统限制读取。")
+            post_status("广告 ID 为全 0", tone="error")
+            return
+
+    settings_page_id = read_android_advertising_id_from_settings_page()
+    if settings_page_id and settings_page_id != ZERO_ADVERTISING_ID:
+        if ui_root is not None:
+            ui_root.after(0, copy_text_to_clipboard, settings_page_id)
+        post_install_log(f"[完成] Android 广告 ID：{settings_page_id}")
+        post_install_log("[完成] 已从设备广告设置页读取，并复制到剪贴板。")
+        post_status("广告 ID 已输出并复制", tone="success")
+        return
+    if settings_page_id == ZERO_ADVERTISING_ID:
+        post_install_log("[提示] 设备广告设置页返回了全 0 广告 ID，可能是用户关闭了广告 ID 或系统限制读取。")
+        post_status("广告 ID 为全 0", tone="error")
+        return
+
+    post_install_log("[异常] 未能从当前 Android 设备读取广告 ID。")
+    if last_outputs:
+        post_install_log("[调试] 命令返回：")
+        for output in last_outputs[-3:]:
+            post_install_log(output)
+    post_install_log("[建议] Android 新版本/部分系统会限制通过 ADB 读取广告 ID，可在 App 内调用 Advertising ID API 后输出到日志。")
+    post_status("未读取到广告 ID", tone="error")
+
+
+def read_android_advertising_id_from_settings_page() -> str | None:
+    post_install_log("[步骤] 常规接口未返回广告 ID，尝试打开系统广告设置页读取。")
+    post_install_log("[提示] 如果设备仍处于锁屏状态，请手动解锁后再次点击“输出 IDFA”。")
+    start_commands = [
+        ["shell", "am", "start", "-a", "com.google.android.gms.settings.ADS_PRIVACY"],
+        ["shell", "am", "start", "-n", "com.google.android.gms/.adid.settings.AdsSettingsActivity"],
+    ]
+    last_error = ""
+    for cmd in start_commands:
+        result = run_adb_text(cmd, timeout=10)
+        output = (result.stdout + result.stderr).strip()
+        if result.returncode == 0:
+            time.sleep(1.2)
+            page_id = extract_android_advertising_id_from_ui_dump()
+            if page_id:
+                return page_id
+        last_error = output or f"退出码：{result.returncode}"
+
+    if last_error:
+        post_install_log(f"[调试] 打开广告设置页失败：{last_error}")
+    return None
+
+
+def extract_android_advertising_id_from_ui_dump() -> str | None:
+    dump_commands = [
+        ["exec-out", "uiautomator", "dump", "/dev/tty"],
+        ["shell", "uiautomator", "dump", "/dev/tty"],
+    ]
+    for cmd in dump_commands:
+        result = run_adb_text(cmd, timeout=12)
+        output = (result.stdout + result.stderr).strip()
+        advertising_id = extract_advertising_id(output)
+        if advertising_id:
+            return advertising_id
+    return None
 
 
 def choose_apk() -> None:
@@ -1775,15 +1974,16 @@ def build_ui() -> None:
     root_frame.lift()
 
     ttk.Label(root_frame, text="Android 工具箱", style="Title.TLabel").pack(anchor="w")
-    ttk.Label(root_frame, text="集成 Android/iOS 日志提取、截图、录屏、APK 安装与 AAB 转 APKS 安装，文件默认保存在当前目录。", style="Subtitle.TLabel").pack(anchor="w", pady=(4, 16))
+    ttk.Label(root_frame, text="集成 Android/iOS 日志提取、IDFA/广告 ID 输出、截图、录屏、APK 安装与 AAB 转 APKS 安装，文件默认保存在当前目录。", style="Subtitle.TLabel").pack(anchor="w", pady=(4, 16))
 
     content = ttk.Frame(root_frame, style="Content.TFrame")
     content.pack(fill="both", expand=True, pady=(8, 16))
     content.columnconfigure(0, weight=1)
 
-    log_card = build_section(content, "日志提取", "Android 会提取当前前台应用的运行日志；iOS 真机会尝试提取当前前台应用沙盒中的日志类文件。")
+    log_card = build_section(content, "日志与 IDFA", "Android 可提取当前前台应用日志并尝试输出广告 ID；iOS 真机会尝试提取当前前台应用沙盒中的日志类文件。")
     log_card.grid(row=0, column=0, sticky="ew", pady=(0, 14))
     ttk.Button(log_card, text="提取当前应用日志", style="Action.TButton", command=choose_current_app_log).pack(side="left")
+    ttk.Button(log_card, text="输出 IDFA", style="Secondary.TButton", command=choose_output_idfa).pack(side="left", padx=(12, 0))
     ttk.Button(log_card, text="打开文件夹", style="Secondary.TButton", command=lambda: open_folder(LOG_DIR)).pack(side="left", padx=(12, 0))
 
     shot_card = build_section(content, "截图", "实时从已连接 Android 设备抓取当前画面，并自动保存为 PNG。")
@@ -1841,7 +2041,7 @@ def build_ui() -> None:
     separator = tk.Frame(root_frame, bg=UI_BORDER, height=1)
     separator.pack(fill="x", pady=(0, 12))
 
-    status_var = tk.StringVar(value="状态 · 等待操作（支持 Android/iOS 日志提取 / 截图 / 录屏 / 安装 / 解析）")
+    status_var = tk.StringVar(value="状态 · 等待操作（支持 Android/iOS 日志提取 / IDFA输出 / 截图 / 录屏 / 安装 / 解析）")
     status_label = ttk.Label(root_frame, textvariable=status_var, style="StatusNeutral.TLabel")
     status_label.pack(anchor="w")
 
