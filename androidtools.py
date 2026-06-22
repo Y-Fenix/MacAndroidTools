@@ -105,24 +105,37 @@ ADVERTISING_ID_RE = re.compile(
 )
 ZERO_ADVERTISING_ID = "00000000-0000-0000-0000-000000000000"
 
-UI_BG = "#FFFFFF"
+UI_BG = "#F4F6FA"
 UI_PANEL = "#FFFFFF"
-UI_TEXT = "#1F2937"
-UI_SUBTEXT = "#6B7280"
-UI_BORDER = "#D9DEE5"
-STATUS_SUCCESS = "#1F7A47"
-STATUS_ERROR = "#C23B3B"
-BLUE = "#0A84FF"
-BLUE_HOVER = "#409CFF"
-BLUE_PRESSED = "#0060DF"
-SOFT_BLUE = "#EAF3FF"
-SOFT_BLUE_HOVER = "#D7E9FF"
-SOFT_BLUE_PRESSED = "#C2DEFF"
-BUTTON_COLUMN_WIDTH = 176
-GREEN = "#A8D5BA"
-GREEN_HOVER = "#BFE2CC"
-GREEN_PRESSED = "#8FC6A6"
-GREEN_TEXT = "#1F3A2E"
+UI_PANEL_ALT = "#F8FAFC"
+UI_TEXT = "#101828"
+UI_SUBTEXT = "#667085"
+UI_MUTED = "#8A94A6"
+UI_BORDER_SOFT = "#E7EBF1"
+UI_CONSOLE_BG = "#0E1726"
+UI_CONSOLE_TEXT = "#D7DEE8"
+STATUS_SUCCESS = "#16824D"
+STATUS_ERROR = "#C0362C"
+BLUE = "#1D4ED8"
+BLUE_HOVER = "#2563EB"
+BLUE_PRESSED = "#1E40AF"
+DANGER = "#DC2626"
+DANGER_HOVER = "#EF4444"
+DANGER_PRESSED = "#B91C1C"
+SOFT_BLUE = "#E8F0FF"
+SOFT_BLUE_HOVER = "#DCE8FF"
+SOFT_BLUE_PRESSED = "#C7D8FF"
+GREEN = "#E5F6ED"
+GREEN_HOVER = "#D5F0E2"
+GREEN_PRESSED = "#BFE5D0"
+GREEN_TEXT = "#17663A"
+
+LOG_MODULES = {
+    "app_log": "日志与 IDFA",
+    "screenshot": "截图",
+    "record": "录屏",
+    "package": "安装包",
+}
 
 record_proc: subprocess.Popen | None = None
 record_start: datetime | None = None
@@ -137,6 +150,9 @@ record_button: ttk.Button | None = None
 adb_path: str | None = None
 selected_file_var: tk.StringVar | None = None
 install_log_widget: tk.Text | None = None
+active_log_var: tk.StringVar | None = None
+current_log_module = "package"
+module_log_history: dict[str, list[str]] = {key: [] for key in LOG_MODULES}
 apk_button: ttk.Button | None = None
 aab_button: ttk.Button | None = None
 parse_button: ttk.Button | None = None
@@ -373,27 +389,60 @@ def set_status(text: str, *, tone: str = "neutral") -> None:
         status_label.configure(style=style_name)
 
 
-def append_install_log(text: str) -> None:
+def format_log_line(text: str) -> str:
+    if not text:
+        return "\n"
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return f"[{timestamp}] {text.rstrip()}\n"
+
+
+def render_active_log() -> None:
     if install_log_widget is None:
         return
-    if not text:
-        install_log_widget.insert("end", "\n")
-    else:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        install_log_widget.insert("end", f"[{timestamp}] {text.rstrip()}\n")
+    install_log_widget.delete("1.0", "end")
+    for line in module_log_history.get(current_log_module, []):
+        install_log_widget.insert("end", line)
     install_log_widget.see("end")
 
 
-def post_install_log(text: str) -> None:
+def select_log_module(module: str) -> None:
+    global current_log_module
+    if module not in LOG_MODULES:
+        module = "package"
+    current_log_module = module
+    if active_log_var is not None:
+        active_log_var.set(f"当前日志：{LOG_MODULES[module]}")
+    render_active_log()
+
+
+def append_module_log(module: str, text: str) -> None:
+    if module not in LOG_MODULES:
+        module = "package"
+    line = format_log_line(text)
+    module_log_history.setdefault(module, []).append(line)
+    if module == current_log_module:
+        render_active_log()
+
+
+def append_install_log(text: str, *, module: str = "package") -> None:
+    append_module_log(module, text)
+
+
+def post_install_log(text: str, *, module: str = "package") -> None:
     if ui_root is None:
         return
-    ui_root.after(0, append_install_log, text)
+    ui_root.after(0, lambda: append_install_log(text, module=module))
 
 
 def post_status(text: str, *, tone: str = "neutral") -> None:
     if ui_root is None:
         return
     ui_root.after(0, lambda: set_status(text, tone=tone))
+
+
+def run_with_log_module(module: str, callback) -> None:
+    select_log_module(module)
+    callback()
 
 
 def copy_text_to_clipboard(text: str) -> None:
@@ -1093,7 +1142,8 @@ def resolve_package_pid(package_name: str) -> str | None:
 
 
 def choose_current_app_log() -> None:
-    append_install_log("")
+    select_log_module("app_log")
+    append_install_log("", module="app_log")
     if has_android_device_connected():
         if not ensure_adb_ready():
             return
@@ -1102,7 +1152,7 @@ def choose_current_app_log() -> None:
             messagebox.showerror("提取失败", "未能识别当前前台 Android 应用，请先打开目标应用并保持在前台。")
             set_status("未识别到当前前台 Android 应用", tone="error")
             return
-        append_install_log(f"[选择] Android 日志提取目标：{package_name}")
+        append_install_log(f"[选择] Android 日志提取目标：{package_name}", module="app_log")
         set_status(f"正在提取 Android 日志：{package_name}")
         threading.Thread(target=run_extract_android_app_log, args=(package_name,), daemon=True).start()
         return
@@ -1115,8 +1165,8 @@ def choose_current_app_log() -> None:
             set_status("已取消 iOS 日志提取")
             return
         bundle_id, app_name = ios_target
-        append_install_log(f"[选择] iOS 日志提取目标：{bundle_id} ({app_name})")
-        append_install_log(f"[设备] iOS 真机：{device_name}")
+        append_install_log(f"[选择] iOS 日志提取目标：{bundle_id} ({app_name})", module="app_log")
+        append_install_log(f"[设备] iOS 真机：{device_name}", module="app_log")
         set_status(f"正在提取 iOS 日志：{app_name}")
         threading.Thread(target=run_extract_ios_app_log, args=(device_identifier, device_name, bundle_id, app_name), daemon=True).start()
         return
@@ -1132,7 +1182,7 @@ def run_extract_android_app_log(package_name: str) -> None:
         if not pid:
             if ui_root is not None:
                 ui_root.after(0, lambda: set_status(f"未找到应用进程：{package_name}", tone="error"))
-                ui_root.after(0, append_install_log, f"[异常] 未找到前台应用进程：{package_name}")
+                ui_root.after(0, lambda: append_install_log(f"[异常] 未找到前台应用进程：{package_name}", module="app_log"))
             return
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1140,61 +1190,64 @@ def run_extract_android_app_log(package_name: str) -> None:
         log_cmd = [adb_path or "adb", "logcat", "-d", "-v", "threadtime", f"--pid={pid}"]
 
         if ui_root is not None:
-            ui_root.after(0, append_install_log, f"[步骤] 提取前台应用日志：{package_name} (PID {pid})")
-            ui_root.after(0, append_install_log, "[命令] " + " ".join(log_cmd))
+            ui_root.after(0, lambda: append_install_log(f"[步骤] 提取前台应用日志：{package_name} (PID {pid})", module="app_log"))
+            ui_root.after(0, lambda: append_install_log("[命令] " + " ".join(log_cmd), module="app_log"))
 
         result = subprocess.run(log_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
         output = result.stdout.strip()
         if result.returncode != 0:
             if ui_root is not None:
                 ui_root.after(0, lambda: set_status(f"日志提取失败：{package_name}", tone="error"))
-                ui_root.after(0, append_install_log, output or f"[失败] logcat 退出码：{result.returncode}")
+                ui_root.after(0, lambda: append_install_log(output or f"[失败] logcat 退出码：{result.returncode}", module="app_log"))
             return
         if not output:
             if ui_root is not None:
                 ui_root.after(0, lambda: set_status(f"未抓到日志：{package_name}", tone="error"))
-                ui_root.after(0, append_install_log, f"[异常] 未抓到 {package_name} 的日志输出。")
+                ui_root.after(0, lambda: append_install_log(f"[异常] 未抓到 {package_name} 的日志输出。", module="app_log"))
             return
 
         log_path.write_text(output + "\n", encoding="utf-8")
         if ui_root is not None:
             ui_root.after(0, lambda: set_status(f"日志已保存：{log_path.name}", tone="success"))
-            ui_root.after(0, append_install_log, f"[完成] 日志已保存：{log_path}")
+            ui_root.after(0, lambda: append_install_log(f"[完成] 日志已保存：{log_path}", module="app_log"))
     except Exception as exc:
         if ui_root is not None:
             ui_root.after(0, lambda: set_status("日志提取异常", tone="error"))
-            ui_root.after(0, append_install_log, f"[异常] 日志提取失败：{exc}")
+            ui_root.after(0, lambda: append_install_log(f"[异常] 日志提取失败：{exc}", module="app_log"))
 
 
 def run_extract_ios_app_log(device_identifier: str, device_name: str, bundle_id: str, app_name: str) -> None:
     try:
         if ui_root is not None:
-            ui_root.after(0, append_install_log, f"[步骤] 提取 iOS 前台应用沙盒日志：{bundle_id} ({app_name})")
-            ui_root.after(0, append_install_log, f"[设备] {device_name} / {device_identifier}")
+            ui_root.after(0, lambda: append_install_log(f"[步骤] 提取 iOS 前台应用沙盒日志：{bundle_id} ({app_name})", module="app_log"))
+            ui_root.after(0, lambda: append_install_log(f"[设备] {device_name} / {device_identifier}", module="app_log"))
         output_dir = copy_ios_app_logs(device_identifier, bundle_id, app_name)
         if output_dir is None:
             if ui_root is not None:
                 ui_root.after(0, lambda: set_status(f"未提取到 iOS 日志：{app_name}", tone="error"))
-                ui_root.after(0, append_install_log, "[异常] 未在 iOS 应用沙盒中找到可提取的日志类文件。")
+                ui_root.after(0, lambda: append_install_log("[异常] 未在 iOS 应用沙盒中找到可提取的日志类文件。", module="app_log"))
                 ui_root.after(
                     0,
-                    append_install_log,
-                    "[提示] iOS 真机通常只能提取应用自行写入沙盒的日志文件，无法像 Android 一样稳定抓取系统级实时 logcat。",
+                    lambda: append_install_log(
+                        "[提示] iOS 真机通常只能提取应用自行写入沙盒的日志文件，无法像 Android 一样稳定抓取系统级实时 logcat。",
+                        module="app_log",
+                    ),
                 )
             return
 
         if ui_root is not None:
             ui_root.after(0, lambda: set_status(f"iOS 日志已保存：{output_dir.name}", tone="success"))
-            ui_root.after(0, append_install_log, f"[完成] iOS 日志目录已保存：{output_dir}")
+            ui_root.after(0, lambda: append_install_log(f"[完成] iOS 日志目录已保存：{output_dir}", module="app_log"))
     except Exception as exc:
         if ui_root is not None:
             ui_root.after(0, lambda: set_status("iOS 日志提取异常", tone="error"))
-            ui_root.after(0, append_install_log, f"[异常] iOS 日志提取失败：{exc}")
+            ui_root.after(0, lambda: append_install_log(f"[异常] iOS 日志提取失败：{exc}", module="app_log"))
 
 
 def choose_output_idfa() -> None:
-    append_install_log("")
-    append_install_log("[选择] 输出 IDFA / 广告 ID")
+    select_log_module("app_log")
+    append_install_log("", module="app_log")
+    append_install_log("[选择] 输出 IDFA / 广告 ID", module="app_log")
     set_status("正在读取 IDFA / 广告 ID…")
     threading.Thread(target=run_output_idfa, daemon=True).start()
 
@@ -1207,13 +1260,13 @@ def run_output_idfa() -> None:
     ios_device = resolve_ios_device_identifier()
     if ios_device is not None:
         device_identifier, device_name = ios_device
-        post_install_log(f"[设备] iOS 真机：{device_name} / {device_identifier}")
-        post_install_log("[提示] iOS 的 IDFA 只能由 App 通过系统 API 在获得用户授权后读取，Mac 侧工具无法直接从真机导出真实 IDFA。")
-        post_install_log("[建议] 如需测试 IDFA，请在目标 App 内增加调试入口或日志输出，再用“提取当前应用日志”查看。")
+        post_install_log(f"[设备] iOS 真机：{device_name} / {device_identifier}", module="app_log")
+        post_install_log("[提示] iOS 的 IDFA 只能由 App 通过系统 API 在获得用户授权后读取，Mac 侧工具无法直接从真机导出真实 IDFA。", module="app_log")
+        post_install_log("[建议] 如需测试 IDFA，请在目标 App 内增加调试入口或日志输出，再用“提取当前应用日志”查看。", module="app_log")
         post_status("iOS 无法从 Mac 侧直接读取 IDFA", tone="error")
         return
 
-    post_install_log("[异常] 未检测到可用的 Android 设备或 iOS 真机。")
+    post_install_log("[异常] 未检测到可用的 Android 设备或 iOS 真机。", module="app_log")
     post_status("未检测到可用设备", tone="error")
 
 
@@ -1222,12 +1275,12 @@ def run_output_android_advertising_id() -> None:
 
     adb_path = resolve_adb_path()
     if not adb_path:
-        post_install_log("[异常] 未找到 adb，无法读取 Android 广告 ID。")
+        post_install_log("[异常] 未找到 adb，无法读取 Android 广告 ID。", module="app_log")
         post_status("未找到 adb", tone="error")
         return
 
-    post_install_log("[设备] Android 设备已连接，开始尝试读取广告 ID。")
-    post_install_log("[提示] 请先解锁 Android 设备屏幕，并保持亮屏；锁屏状态下无法读取广告设置页里的 IDFA/广告 ID。")
+    post_install_log("[设备] Android 设备已连接，开始尝试读取广告 ID。", module="app_log")
+    post_install_log("[提示] 请先解锁 Android 设备屏幕，并保持亮屏；锁屏状态下无法读取广告设置页里的 IDFA/广告 ID。", module="app_log")
     commands = [
         (["shell", "settings", "get", "secure", "advertising_id"], "settings secure advertising_id"),
         (["shell", "settings", "get", "global", "advertising_id"], "settings global advertising_id"),
@@ -1254,12 +1307,12 @@ def run_output_android_advertising_id() -> None:
         if advertising_id and advertising_id != ZERO_ADVERTISING_ID:
             if ui_root is not None:
                 ui_root.after(0, copy_text_to_clipboard, advertising_id)
-            post_install_log(f"[完成] Android 广告 ID：{advertising_id}")
-            post_install_log("[完成] 已复制到剪贴板。")
+            post_install_log(f"[完成] Android 广告 ID：{advertising_id}", module="app_log")
+            post_install_log("[完成] 已复制到剪贴板。", module="app_log")
             post_status("广告 ID 已输出并复制", tone="success")
             return
         if advertising_id == ZERO_ADVERTISING_ID:
-            post_install_log("[提示] 设备返回了全 0 广告 ID，可能是用户关闭了广告 ID 或系统限制读取。")
+            post_install_log("[提示] 设备返回了全 0 广告 ID，可能是用户关闭了广告 ID 或系统限制读取。", module="app_log")
             post_status("广告 ID 为全 0", tone="error")
             return
 
@@ -1267,27 +1320,27 @@ def run_output_android_advertising_id() -> None:
     if settings_page_id and settings_page_id != ZERO_ADVERTISING_ID:
         if ui_root is not None:
             ui_root.after(0, copy_text_to_clipboard, settings_page_id)
-        post_install_log(f"[完成] Android 广告 ID：{settings_page_id}")
-        post_install_log("[完成] 已从设备广告设置页读取，并复制到剪贴板。")
+        post_install_log(f"[完成] Android 广告 ID：{settings_page_id}", module="app_log")
+        post_install_log("[完成] 已从设备广告设置页读取，并复制到剪贴板。", module="app_log")
         post_status("广告 ID 已输出并复制", tone="success")
         return
     if settings_page_id == ZERO_ADVERTISING_ID:
-        post_install_log("[提示] 设备广告设置页返回了全 0 广告 ID，可能是用户关闭了广告 ID 或系统限制读取。")
+        post_install_log("[提示] 设备广告设置页返回了全 0 广告 ID，可能是用户关闭了广告 ID 或系统限制读取。", module="app_log")
         post_status("广告 ID 为全 0", tone="error")
         return
 
-    post_install_log("[异常] 未能从当前 Android 设备读取广告 ID。")
+    post_install_log("[异常] 未能从当前 Android 设备读取广告 ID。", module="app_log")
     if last_outputs:
-        post_install_log("[调试] 命令返回：")
+        post_install_log("[调试] 命令返回：", module="app_log")
         for output in last_outputs[-3:]:
-            post_install_log(output)
-    post_install_log("[建议] Android 新版本/部分系统会限制通过 ADB 读取广告 ID，可在 App 内调用 Advertising ID API 后输出到日志。")
+            post_install_log(output, module="app_log")
+    post_install_log("[建议] Android 新版本/部分系统会限制通过 ADB 读取广告 ID，可在 App 内调用 Advertising ID API 后输出到日志。", module="app_log")
     post_status("未读取到广告 ID", tone="error")
 
 
 def read_android_advertising_id_from_settings_page() -> str | None:
-    post_install_log("[步骤] 常规接口未返回广告 ID，尝试打开系统广告设置页读取。")
-    post_install_log("[提示] 如果设备仍处于锁屏状态，请手动解锁后再次点击“输出 IDFA”。")
+    post_install_log("[步骤] 常规接口未返回广告 ID，尝试打开系统广告设置页读取。", module="app_log")
+    post_install_log("[提示] 如果设备仍处于锁屏状态，请手动解锁后再次点击“输出 IDFA”。", module="app_log")
     start_commands = [
         ["shell", "am", "start", "-a", "com.google.android.gms.settings.ADS_PRIVACY"],
         ["shell", "am", "start", "-n", "com.google.android.gms/.adid.settings.AdsSettingsActivity"],
@@ -1304,7 +1357,7 @@ def read_android_advertising_id_from_settings_page() -> str | None:
         last_error = output or f"退出码：{result.returncode}"
 
     if last_error:
-        post_install_log(f"[调试] 打开广告设置页失败：{last_error}")
+        post_install_log(f"[调试] 打开广告设置页失败：{last_error}", module="app_log")
     return None
 
 
@@ -1323,6 +1376,7 @@ def extract_android_advertising_id_from_ui_dump() -> str | None:
 
 
 def choose_apk() -> None:
+    select_log_module("package")
     apk_path_str = filedialog.askopenfilename(
         title="选择 APK 文件",
         initialdir=str(BASE_DIR),
@@ -1373,6 +1427,7 @@ def run_install_apk(apk_path: Path) -> None:
 
 
 def choose_aab() -> None:
+    select_log_module("package")
     aab_path_str = filedialog.askopenfilename(
         title="选择 AAB 文件",
         initialdir=str(BASE_DIR),
@@ -1475,6 +1530,7 @@ def run_convert_and_install_aab(aab_path: Path) -> None:
 
 
 def choose_package_for_parse() -> None:
+    select_log_module("package")
     package_path_str = filedialog.askopenfilename(
         title="选择安装包文件",
         initialdir=str(BASE_DIR),
@@ -1772,19 +1828,26 @@ def run_parse_package(package_path: Path) -> None:
 
 
 def take_screenshot() -> None:
+    select_log_module("screenshot")
+    append_install_log("", module="screenshot")
+    append_install_log("[选择] 立即截图", module="screenshot")
     if not ensure_adb_ready():
+        append_install_log("[异常] 未找到可用的 Android 设备或 adb。", module="screenshot")
         return
     ensure_dir(SCREENSHOT_DIR)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = SCREENSHOT_DIR / f"android_screenshot_{ts}.png"
     set_status("正在从设备抓取截图…")
+    append_install_log("[步骤] 正在从设备抓取当前画面。", module="screenshot")
     result = run_adb(["exec-out", "screencap", "-p"])
     if result.returncode != 0:
         msg = result.stderr.decode(errors="ignore").strip() or "adb 执行失败"
         messagebox.showerror("截图失败", msg)
+        append_install_log(f"[失败] 截图失败：{msg}", module="screenshot")
         set_status("截图失败", tone="error")
         return
     out_path.write_bytes(result.stdout)
+    append_install_log(f"[完成] 截图已保存：{out_path}", module="screenshot")
     set_status(f"截图已保存：{out_path.name}", tone="success")
     messagebox.showinfo("截图完成", f"已保存到：\n{out_path}")
 
@@ -1795,6 +1858,7 @@ def update_timer_text() -> None:
         return
     if record_start is None:
         record_button.config(text="开始录屏")
+        record_button.configure(style="Action.TButton")
         timer_job = None
         return
     if record_proc is not None and record_proc.poll() is not None:
@@ -1803,15 +1867,25 @@ def update_timer_text() -> None:
             start_new_segment()
         else:
             record_button.config(text="开始录屏")
+            record_button.configure(style="Action.TButton")
             timer_job = None
             return
     elapsed = datetime.now() - record_start
     total_seconds = int(elapsed.total_seconds())
     mins, secs = divmod(total_seconds, 60)
     hours, mins = divmod(mins, 60)
-    record_button.config(text=f"录制中 {hours:02d}:{mins:02d}:{secs:02d} · 第 {segment_index} 段")
+    record_button.config(text=f"结束录屏 {hours:02d}:{mins:02d}:{secs:02d} · 第 {segment_index} 段")
+    record_button.configure(style="Danger.TButton")
     set_status(f"持续录屏中，当前第 {segment_index} 段", tone="recording")
     timer_job = record_button.after(500, update_timer_text)
+
+
+def toggle_recording() -> None:
+    select_log_module("record")
+    if record_start is None:
+        start_recording()
+    else:
+        stop_recording()
 
 
 def start_new_segment() -> None:
@@ -1830,27 +1904,38 @@ def finalize_segment() -> subprocess.CompletedProcess | None:
         return None
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     local_path = RECORD_DIR / f"android_record_{ts}_part{segment_index:02d}.mp4"
+    append_install_log(f"[步骤] 拉取录屏分段：第 {segment_index} 段", module="record")
     pull_result = run_adb(["pull", REMOTE_RECORD_PATH, str(local_path)])
     run_adb(["shell", "rm", "-f", REMOTE_RECORD_PATH])
     current_segment_pulled = True
     if pull_result.returncode == 0:
         recorded_files.append(local_path)
+        append_install_log(f"[完成] 已保存录屏分段：{local_path}", module="record")
         segment_index += 1
+    else:
+        output = (pull_result.stdout + pull_result.stderr).decode(errors="ignore").strip()
+        append_install_log(output or f"[失败] adb pull 退出码：{pull_result.returncode}", module="record")
     return pull_result
 
 
 def start_recording() -> None:
     global record_start, timer_job, auto_recording, segment_index, recorded_files
+    select_log_module("record")
+    append_install_log("", module="record")
+    append_install_log("[选择] 开始录屏", module="record")
     if record_proc and record_proc.poll() is None:
         messagebox.showinfo("提示", "已经在录制中。")
+        append_install_log("[提示] 已经在录制中。", module="record")
         return
     if not ensure_adb_ready():
+        append_install_log("[异常] 未找到可用的 Android 设备或 adb。", module="record")
         return
     ensure_dir(RECORD_DIR)
     auto_recording = True
     segment_index = 1
     recorded_files = []
     start_new_segment()
+    append_install_log("[步骤] 已启动 Android screenrecord。", module="record")
     record_start = datetime.now()
     if timer_job and record_button is not None:
         record_button.after_cancel(timer_job)
@@ -1859,11 +1944,15 @@ def start_recording() -> None:
 
 def stop_recording() -> None:
     global record_proc, record_start, timer_job, auto_recording
+    select_log_module("record")
     if not record_proc and not record_start:
         messagebox.showinfo("提示", "当前没有录制任务。")
+        append_install_log("[提示] 当前没有录制任务。", module="record")
         return
     auto_recording = False
     set_status("正在结束录屏并拉取文件…")
+    append_install_log("[选择] 结束录屏", module="record")
+    append_install_log("[步骤] 正在停止 screenrecord 并拉取文件。", module="record")
     if record_proc and record_proc.poll() is None:
         kill_result = run_adb(["shell", "pkill", "-l", "2", "screenrecord"])
         if kill_result.returncode != 0:
@@ -1893,33 +1982,58 @@ def stop_recording() -> None:
     if pull_result is not None and pull_result.returncode != 0:
         msg = pull_result.stderr.decode(errors="ignore").strip() or "adb pull 失败"
         messagebox.showerror("录屏失败", msg)
+        append_install_log(f"[失败] 录屏文件拉取失败：{msg}", module="record")
         set_status("录屏文件拉取失败", tone="error")
     elif recorded_files:
         if len(recorded_files) == 1:
             set_status(f"录屏已保存：{recorded_files[0].name}", tone="success")
+            append_install_log(f"[完成] 录屏已保存：{recorded_files[0]}", module="record")
             messagebox.showinfo("录屏完成", f"已保存到：\n{recorded_files[0]}")
         else:
             set_status(f"录屏已保存，共 {len(recorded_files)} 段", tone="success")
+            append_install_log(f"[完成] 录屏已保存，共 {len(recorded_files)} 段：{RECORD_DIR}", module="record")
             messagebox.showinfo("录屏完成", f"已保存 {len(recorded_files)} 段到：\n{RECORD_DIR}")
 
 
-def build_section(parent: ttk.Frame, title: str, subtitle: str) -> ttk.LabelFrame:
-    frame = ttk.LabelFrame(parent, text=title, padding=(18, 16, 18, 18))
-    ttk.Label(frame, text=subtitle, style="Caption.TLabel", wraplength=760, justify="left").pack(anchor="w", pady=(0, 14))
-    return frame
-
-
-def build_grid_section(parent: ttk.Frame, title: str, subtitle: str) -> tuple[ttk.LabelFrame, ttk.Frame]:
-    frame = ttk.LabelFrame(parent, text=title, padding=(18, 16, 18, 18))
-    ttk.Label(frame, text=subtitle, style="Caption.TLabel", wraplength=760, justify="left").grid(row=0, column=0, sticky="w", pady=(0, 14))
-    body = ttk.Frame(frame, style="Content.TFrame")
-    body.grid(row=1, column=0, sticky="nsew")
+def build_card(parent: ttk.Frame, title: str, subtitle: str, *, wraplength: int = 520) -> tuple[ttk.Frame, ttk.Frame]:
+    frame = ttk.Frame(parent, style="Card.TFrame", padding=(18, 16, 18, 18))
     frame.columnconfigure(0, weight=1)
+    frame.rowconfigure(1, weight=1)
+
+    header = ttk.Frame(frame, style="CardInner.TFrame")
+    header.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+    header.columnconfigure(0, weight=1)
+    ttk.Label(header, text=title, style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
+    if subtitle:
+        ttk.Label(
+            header,
+            text=subtitle,
+            style="CardCaption.TLabel",
+            wraplength=wraplength,
+            justify="left",
+        ).grid(row=1, column=0, sticky="ew", pady=(5, 0))
+
+    body = ttk.Frame(frame, style="CardInner.TFrame")
+    body.grid(row=1, column=0, sticky="nsew")
     return frame, body
 
 
+def build_button_bar(parent: ttk.Frame) -> ttk.Frame:
+    bar = ttk.Frame(parent, style="CardInner.TFrame")
+    bar.columnconfigure((0, 1, 2), weight=1, uniform="action")
+    return bar
+
+
+def bind_log_module_area(widget, module: str) -> None:
+    if hasattr(widget, "winfo_class") and widget.winfo_class() in {"TButton", "Button"}:
+        return
+    widget.bind("<Button-1>", lambda _event, selected_module=module: select_log_module(selected_module), add="+")
+    for child in widget.winfo_children():
+        bind_log_module_area(child, module)
+
+
 def build_ui() -> None:
-    global status_var, status_label, record_button, selected_file_var, install_log_widget, apk_button, aab_button, parse_button, ui_root
+    global status_var, status_label, record_button, selected_file_var, install_log_widget, active_log_var, apk_button, aab_button, parse_button, ui_root
 
     if platform.system() != "Darwin":
         show_startup_error("系统不支持", "这个版本仅面向 macOS。")
@@ -1938,112 +2052,179 @@ def build_ui() -> None:
     root.configure(bg=UI_BG)
     apply_window_icon(root)
     root.tk_setPalette(background=UI_BG, foreground=UI_TEXT, activeBackground=BLUE_HOVER, activeForeground="#FFFFFF")
-    root.resizable(False, False)
+    root.resizable(True, True)
     root.withdraw()
 
-    win_w, win_h = 900, 900
+    win_w, win_h = 1120, 760
     root.update_idletasks()
     pos_x = int((root.winfo_screenwidth() - win_w) / 2)
     pos_y = int((root.winfo_screenheight() - win_h) / 2)
     root.geometry(f"{win_w}x{win_h}+{pos_x}+{pos_y}")
+    root.minsize(1040, 700)
 
     style = ttk.Style()
     style.theme_use("clam")
     style.configure("Root.TFrame", background=UI_BG, padding=0)
     style.configure("Content.TFrame", background=UI_BG)
-    style.configure("TLabelframe", background=UI_PANEL, bordercolor=UI_BORDER, borderwidth=1, relief="solid")
-    style.configure("TLabelframe.Label", background=UI_BG, foreground=UI_TEXT, font=("SF Pro Display", 15, "bold"))
-    style.configure("Title.TLabel", background=UI_BG, foreground=UI_TEXT, font=("SF Pro Display", 28, "bold"))
-    style.configure("Subtitle.TLabel", background=UI_BG, foreground=UI_SUBTEXT, font=("SF Pro Text", 13))
-    style.configure("Caption.TLabel", background=UI_PANEL, foreground=UI_SUBTEXT, font=("SF Pro Text", 12))
-    style.configure("StatusNeutral.TLabel", background=UI_BG, foreground=UI_SUBTEXT, font=("SF Pro Text", 11))
-    style.configure("StatusSuccess.TLabel", background=UI_BG, foreground=STATUS_SUCCESS, font=("SF Pro Text", 11))
-    style.configure("StatusError.TLabel", background=UI_BG, foreground=STATUS_ERROR, font=("SF Pro Text", 11))
-    style.configure("Path.TLabel", background=UI_PANEL, foreground=UI_TEXT, font=("SF Pro Text", 11))
-    style.configure("Action.TButton", font=("SF Pro Text", 12, "bold"), padding=(16, 10))
-    style.configure("Install.TButton", font=("SF Pro Text", 12, "bold"), padding=(16, 10))
-    style.configure("Secondary.TButton", font=("SF Pro Text", 12), padding=(16, 10))
+    style.configure("Card.TFrame", background=UI_PANEL, bordercolor=UI_BORDER_SOFT, borderwidth=1, relief="solid")
+    style.configure("CardInner.TFrame", background=UI_PANEL)
+    style.configure("Header.TFrame", background=UI_BG)
+    style.configure("Footer.TFrame", background=UI_PANEL_ALT, bordercolor=UI_BORDER_SOFT, borderwidth=1, relief="solid")
+    style.configure("Inset.TFrame", background=UI_PANEL_ALT, bordercolor=UI_BORDER_SOFT, borderwidth=1, relief="solid")
+    style.configure("Title.TLabel", background=UI_BG, foreground=UI_TEXT, font=("SF Pro Display", 24, "bold"))
+    style.configure("Subtitle.TLabel", background=UI_BG, foreground=UI_SUBTEXT, font=("SF Pro Text", 12))
+    style.configure("Eyebrow.TLabel", background=UI_BG, foreground=UI_MUTED, font=("SF Pro Text", 10, "bold"))
+    style.configure("Caption.TLabel", background=UI_BG, foreground=UI_SUBTEXT, font=("SF Pro Text", 12))
+    style.configure("CardTitle.TLabel", background=UI_PANEL, foreground=UI_TEXT, font=("SF Pro Display", 15, "bold"))
+    style.configure("CardCaption.TLabel", background=UI_PANEL, foreground=UI_SUBTEXT, font=("SF Pro Text", 11))
+    style.configure("StatusNeutral.TLabel", background=UI_PANEL_ALT, foreground=UI_SUBTEXT, font=("SF Pro Text", 11))
+    style.configure("StatusSuccess.TLabel", background=UI_PANEL_ALT, foreground=STATUS_SUCCESS, font=("SF Pro Text", 11, "bold"))
+    style.configure("StatusError.TLabel", background=UI_PANEL_ALT, foreground=STATUS_ERROR, font=("SF Pro Text", 11, "bold"))
+    style.configure("Path.TLabel", background=UI_PANEL_ALT, foreground=UI_TEXT, font=("SF Pro Text", 11))
+    style.configure("Meta.TLabel", background=UI_PANEL_ALT, foreground=UI_MUTED, font=("SF Pro Text", 10, "bold"))
+    style.configure("Action.TButton", font=("SF Pro Text", 11, "bold"), padding=(14, 9))
+    style.configure("Danger.TButton", font=("SF Pro Text", 11, "bold"), padding=(14, 9))
+    style.configure("Install.TButton", font=("SF Pro Text", 11, "bold"), padding=(14, 9))
+    style.configure("Secondary.TButton", font=("SF Pro Text", 11), padding=(14, 9))
     style.map("Action.TButton", background=[("pressed", BLUE_PRESSED), ("active", BLUE_HOVER), ("!disabled", BLUE)], foreground=[("!disabled", "#FFFFFF")])
+    style.map("Danger.TButton", background=[("pressed", DANGER_PRESSED), ("active", DANGER_HOVER), ("!disabled", DANGER)], foreground=[("!disabled", "#FFFFFF")])
     style.map("Install.TButton", background=[("pressed", GREEN_PRESSED), ("active", GREEN_HOVER), ("!disabled", GREEN)], foreground=[("!disabled", GREEN_TEXT)])
     style.map("Secondary.TButton", background=[("pressed", SOFT_BLUE_PRESSED), ("active", SOFT_BLUE_HOVER), ("!disabled", SOFT_BLUE)], foreground=[("!disabled", BLUE)])
 
-    root_frame = ttk.Frame(root, style="Root.TFrame", padding=(24, 20, 24, 18))
-    root_frame.pack(fill="both", expand=True)
-    background_fill = tk.Frame(root, bg=UI_BG, highlightthickness=0, bd=0)
-    background_fill.place(x=0, y=0, relwidth=1, relheight=1)
-    root_frame.lift()
+    root_frame = ttk.Frame(root, style="Root.TFrame", padding=(22, 18, 22, 16))
+    root_frame.grid(row=0, column=0, sticky="nsew")
+    root.columnconfigure(0, weight=1)
+    root.rowconfigure(0, weight=1)
+    root_frame.columnconfigure(0, weight=1)
+    root_frame.rowconfigure(1, weight=1)
 
-    ttk.Label(root_frame, text="Android 工具箱", style="Title.TLabel").pack(anchor="w")
-    ttk.Label(root_frame, text="集成 Android/iOS 日志提取、IDFA/广告 ID 输出、截图、录屏、APK 安装与 AAB 转 APKS 安装，文件默认保存在当前目录。", style="Subtitle.TLabel").pack(anchor="w", pady=(4, 16))
+    header = ttk.Frame(root_frame, style="Header.TFrame")
+    header.grid(row=0, column=0, sticky="ew", pady=(0, 16))
+    header.columnconfigure(0, weight=1)
+    ttk.Label(header, text="专业测试工具", style="Eyebrow.TLabel").grid(row=0, column=0, sticky="w")
+    ttk.Label(header, text="Android 工具箱", style="Title.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 0))
+    ttk.Label(
+        header,
+        text="日志提取、广告 ID 输出、截图录屏、安装与包体解析集中在一个工作台。",
+        style="Subtitle.TLabel",
+    ).grid(row=2, column=0, sticky="w", pady=(5, 0))
 
     content = ttk.Frame(root_frame, style="Content.TFrame")
-    content.pack(fill="both", expand=True, pady=(8, 16))
-    content.columnconfigure(0, weight=1)
+    content.grid(row=1, column=0, sticky="nsew")
+    content.columnconfigure(0, weight=0, minsize=520)
+    content.columnconfigure(1, weight=1, minsize=500)
+    content.rowconfigure(0, weight=1)
 
-    log_card = build_section(content, "日志与 IDFA", "Android 可提取当前前台应用日志并尝试输出广告 ID；iOS 真机会尝试提取当前前台应用沙盒中的日志类文件。")
-    log_card.grid(row=0, column=0, sticky="ew", pady=(0, 14))
-    ttk.Button(log_card, text="提取当前应用日志", style="Action.TButton", command=choose_current_app_log).pack(side="left")
-    ttk.Button(log_card, text="输出 IDFA", style="Secondary.TButton", command=choose_output_idfa).pack(side="left", padx=(12, 0))
-    ttk.Button(log_card, text="打开文件夹", style="Secondary.TButton", command=lambda: open_folder(LOG_DIR)).pack(side="left", padx=(12, 0))
+    left_column = ttk.Frame(content, style="Content.TFrame")
+    left_column.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+    left_column.columnconfigure(0, weight=1)
 
-    shot_card = build_section(content, "截图", "实时从已连接 Android 设备抓取当前画面，并自动保存为 PNG。")
-    shot_card.grid(row=1, column=0, sticky="ew", pady=(0, 14))
-    ttk.Button(shot_card, text="立即截图", style="Action.TButton", command=take_screenshot).pack(side="left")
-    ttk.Button(shot_card, text="打开文件夹", style="Secondary.TButton", command=lambda: open_folder(SCREENSHOT_DIR)).pack(side="left", padx=(12, 0))
+    log_card, log_body = build_card(
+        left_column,
+        "日志与 IDFA",
+        "Android 读取当前前台应用日志并尝试输出广告 ID；iOS 读取当前前台应用日志文件。",
+        wraplength=460,
+    )
+    log_card.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+    log_actions = build_button_bar(log_body)
+    log_actions.grid(row=0, column=0, sticky="ew")
+    ttk.Button(log_actions, text="提取应用日志", style="Action.TButton", command=choose_current_app_log).grid(row=0, column=0, sticky="ew", padx=(0, 10))
+    ttk.Button(log_actions, text="输出 IDFA", style="Secondary.TButton", command=choose_output_idfa).grid(row=0, column=1, sticky="ew", padx=(0, 10))
+    ttk.Button(log_actions, text="打开日志目录", style="Secondary.TButton", command=lambda: run_with_log_module("app_log", lambda: open_folder(LOG_DIR))).grid(row=0, column=2, sticky="ew")
+    bind_log_module_area(log_card, "app_log")
 
-    record_card = build_section(content, "录屏", "开始后自动分段录制，停止时会拉取所有 MP4 文件到本地。")
-    record_card.grid(row=2, column=0, sticky="ew", pady=(0, 14))
-    record_button = ttk.Button(record_card, text="开始录屏", style="Action.TButton", command=start_recording)
-    record_button.pack(side="left")
-    ttk.Button(record_card, text="结束录屏", style="Secondary.TButton", command=stop_recording).pack(side="left", padx=(12, 0))
-    ttk.Button(record_card, text="打开文件夹", style="Secondary.TButton", command=lambda: open_folder(RECORD_DIR)).pack(side="left", padx=(12, 0))
+    shot_card, shot_body = build_card(left_column, "截图", "从已连接 Android 设备抓取当前画面并保存为 PNG。", wraplength=460)
+    shot_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+    shot_actions = build_button_bar(shot_body)
+    shot_actions.grid(row=0, column=0, sticky="ew")
+    ttk.Button(shot_actions, text="立即截图", style="Action.TButton", command=take_screenshot).grid(row=0, column=0, sticky="ew", padx=(0, 10))
+    ttk.Button(shot_actions, text="打开截图目录", style="Secondary.TButton", command=lambda: run_with_log_module("screenshot", lambda: open_folder(SCREENSHOT_DIR))).grid(row=0, column=1, sticky="ew", padx=(0, 10))
+    ttk.Label(shot_actions, text="", style="CardCaption.TLabel").grid(row=0, column=2, sticky="ew")
+    bind_log_module_area(shot_card, "screenshot")
 
-    install_card, install_body = build_grid_section(content, "安装包", "支持 APK 直接安装、AAB 转 APKS 后安装，以及解析 APK/AAB/APKS/IPA 包体信息；运行日志会统一显示在右侧日志区。")
-    install_card.grid(row=3, column=0, sticky="ew")
-    install_body.columnconfigure(0, weight=0)
-    install_body.columnconfigure(1, weight=1)
+    record_card, record_body = build_card(left_column, "录屏", "分段录制 Android 屏幕，停止后自动拉取 MP4 文件到本地。", wraplength=460)
+    record_card.grid(row=2, column=0, sticky="ew")
+    record_actions = build_button_bar(record_body)
+    record_actions.grid(row=0, column=0, sticky="ew")
+    record_button = ttk.Button(record_actions, text="开始录屏", style="Action.TButton", command=toggle_recording)
+    record_button.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+    ttk.Button(record_actions, text="打开录屏目录", style="Secondary.TButton", command=lambda: run_with_log_module("record", lambda: open_folder(RECORD_DIR))).grid(row=0, column=1, sticky="ew", padx=(0, 10))
+    ttk.Label(record_actions, text="", style="CardCaption.TLabel").grid(row=0, column=2, sticky="ew")
+    bind_log_module_area(record_card, "record")
 
-    install_actions = ttk.Frame(install_body, style="Content.TFrame")
-    install_actions.grid(row=0, column=0, sticky="nw", padx=(0, 20), pady=(4, 0))
-    install_actions.columnconfigure(0, minsize=BUTTON_COLUMN_WIDTH)
+    install_card, install_body = build_card(
+        content,
+        "模块运行日志",
+        "点击左侧或安装包操作后，这里只显示当前模块的执行记录。",
+        wraplength=480,
+    )
+    install_card.grid(row=0, column=1, sticky="nsew")
+    install_body.columnconfigure(0, weight=1)
+    install_body.rowconfigure(3, weight=1)
+
+    install_actions = ttk.Frame(install_body, style="CardInner.TFrame")
+    install_actions.grid(row=0, column=0, sticky="ew")
+    install_actions.columnconfigure((0, 1, 2), weight=1, uniform="install")
 
     apk_button = ttk.Button(install_actions, text="选择 APK", style="Install.TButton", command=choose_apk)
-    apk_button.grid(row=0, column=0, sticky="ew")
+    apk_button.grid(row=0, column=0, sticky="ew", padx=(0, 10))
     aab_button = ttk.Button(install_actions, text="选择 AAB", style="Install.TButton", command=choose_aab)
-    aab_button.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+    aab_button.grid(row=0, column=1, sticky="ew", padx=(0, 10))
     parse_button = ttk.Button(install_actions, text="解析安装包", style="Action.TButton", command=choose_package_for_parse)
-    parse_button.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+    parse_button.grid(row=0, column=2, sticky="ew")
 
-    install_log_area = ttk.Frame(install_body, style="Content.TFrame")
-    install_log_area.grid(row=0, column=1, sticky="nsew")
-    install_log_area.columnconfigure(0, weight=1)
-
+    path_panel = ttk.Frame(install_body, style="Inset.TFrame", padding=(12, 9, 12, 9))
+    path_panel.grid(row=1, column=0, sticky="ew", pady=(14, 12))
+    path_panel.columnconfigure(0, weight=1)
     selected_file_var = tk.StringVar(value="当前文件：未选择 APK / AAB / APKS / IPA")
-    ttk.Label(install_log_area, textvariable=selected_file_var, style="Path.TLabel", wraplength=560, justify="left").grid(row=0, column=0, sticky="ew", pady=(0, 10))
+    ttk.Label(path_panel, text="CURRENT FILE", style="Meta.TLabel").grid(row=0, column=0, sticky="w")
+    ttk.Label(path_panel, textvariable=selected_file_var, style="Path.TLabel", wraplength=430, justify="left").grid(row=1, column=0, sticky="ew", pady=(4, 0))
+
+    active_log_var = tk.StringVar(value=f"当前日志：{LOG_MODULES[current_log_module]}")
+    ttk.Label(install_body, textvariable=active_log_var, style="CardCaption.TLabel").grid(row=2, column=0, sticky="w", pady=(0, 8))
+
+    console_panel = tk.Frame(
+        install_body,
+        bg=UI_CONSOLE_BG,
+        highlightthickness=1,
+        highlightbackground=UI_BORDER_SOFT,
+        highlightcolor=BLUE,
+        bd=0,
+    )
+    console_panel.grid(row=3, column=0, sticky="nsew")
+    console_panel.columnconfigure(0, weight=1)
+    console_panel.rowconfigure(0, weight=1)
 
     install_log_widget = tk.Text(
-        install_log_area,
-        height=8,
-        bg="#FFFFFF",
-        fg=UI_TEXT,
-        relief="solid",
-        borderwidth=1,
-        highlightthickness=1,
-        highlightbackground=UI_BORDER,
-        highlightcolor=BLUE,
-        font=("SF Pro Text", 11),
-        padx=12,
-        pady=10,
+        console_panel,
+        height=18,
+        bg=UI_CONSOLE_BG,
+        fg=UI_CONSOLE_TEXT,
+        insertbackground=UI_CONSOLE_TEXT,
+        selectbackground=BLUE,
+        selectforeground="#FFFFFF",
+        relief="flat",
+        borderwidth=0,
+        highlightthickness=0,
+        font=("SF Mono", 11),
+        padx=14,
+        pady=12,
+        wrap="word",
     )
-    install_log_widget.grid(row=1, column=0, sticky="nsew")
-    append_install_log("[日志] 安装、解析和日志提取进度会显示在这里。")
+    install_log_widget.grid(row=0, column=0, sticky="nsew")
+    log_scrollbar = ttk.Scrollbar(console_panel, orient="vertical", command=install_log_widget.yview)
+    log_scrollbar.grid(row=0, column=1, sticky="ns")
+    install_log_widget.configure(yscrollcommand=log_scrollbar.set)
+    append_install_log("[日志] 安装、解析进度会显示在这里。")
+    select_log_module("package")
+    bind_log_module_area(install_card, "package")
 
-    separator = tk.Frame(root_frame, bg=UI_BORDER, height=1)
-    separator.pack(fill="x", pady=(0, 12))
-
+    footer = ttk.Frame(root_frame, style="Footer.TFrame", padding=(14, 10, 14, 10))
+    footer.grid(row=2, column=0, sticky="ew", pady=(14, 0))
+    footer.columnconfigure(0, weight=1)
     status_var = tk.StringVar(value="状态 · 等待操作（支持 Android/iOS 日志提取 / IDFA输出 / 截图 / 录屏 / 安装 / 解析）")
-    status_label = ttk.Label(root_frame, textvariable=status_var, style="StatusNeutral.TLabel")
-    status_label.pack(anchor="w")
+    status_label = ttk.Label(footer, textvariable=status_var, style="StatusNeutral.TLabel")
+    status_label.grid(row=0, column=0, sticky="w")
 
     root.deiconify()
     root.lift()
