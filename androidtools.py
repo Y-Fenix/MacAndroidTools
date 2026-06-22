@@ -144,6 +144,8 @@ auto_recording = False
 segment_index = 0
 current_segment_pulled = True
 recorded_files: list[Path] = []
+last_record_log_second = -1
+record_progress_log_index: int | None = None
 status_var: tk.StringVar | None = None
 status_label: ttk.Label | None = None
 record_button: ttk.Button | None = None
@@ -1852,6 +1854,28 @@ def take_screenshot() -> None:
     messagebox.showinfo("截图完成", f"已保存到：\n{out_path}")
 
 
+def format_record_elapsed(total_seconds: int) -> str:
+    mins, secs = divmod(total_seconds, 60)
+    hours, mins = divmod(mins, 60)
+    return f"{hours:02d}:{mins:02d}:{secs:02d}"
+
+
+def append_record_progress(total_seconds: int) -> None:
+    global last_record_log_second, record_progress_log_index
+    if total_seconds == last_record_log_second:
+        return
+    last_record_log_second = total_seconds
+    line = format_log_line(f"[状态] 已录制 {format_record_elapsed(total_seconds)} · 当前第 {segment_index} 段")
+    record_logs = module_log_history.setdefault("record", [])
+    if record_progress_log_index is None or record_progress_log_index >= len(record_logs):
+        record_logs.append(line)
+        record_progress_log_index = len(record_logs) - 1
+    else:
+        record_logs[record_progress_log_index] = line
+    if current_log_module == "record":
+        render_active_log()
+
+
 def update_timer_text() -> None:
     global timer_job
     if record_button is None:
@@ -1872,11 +1896,11 @@ def update_timer_text() -> None:
             return
     elapsed = datetime.now() - record_start
     total_seconds = int(elapsed.total_seconds())
-    mins, secs = divmod(total_seconds, 60)
-    hours, mins = divmod(mins, 60)
-    record_button.config(text=f"结束录屏 {hours:02d}:{mins:02d}:{secs:02d} · 第 {segment_index} 段")
+    record_button.config(text="结束录屏")
     record_button.configure(style="Danger.TButton")
-    set_status(f"持续录屏中，当前第 {segment_index} 段", tone="recording")
+    elapsed_text = format_record_elapsed(total_seconds)
+    set_status(f"持续录屏中，已录制 {elapsed_text}，当前第 {segment_index} 段", tone="recording")
+    append_record_progress(total_seconds)
     timer_job = record_button.after(500, update_timer_text)
 
 
@@ -1919,7 +1943,7 @@ def finalize_segment() -> subprocess.CompletedProcess | None:
 
 
 def start_recording() -> None:
-    global record_start, timer_job, auto_recording, segment_index, recorded_files
+    global record_start, timer_job, auto_recording, segment_index, recorded_files, last_record_log_second, record_progress_log_index
     select_log_module("record")
     append_install_log("", module="record")
     append_install_log("[选择] 开始录屏", module="record")
@@ -1934,6 +1958,8 @@ def start_recording() -> None:
     auto_recording = True
     segment_index = 1
     recorded_files = []
+    last_record_log_second = -1
+    record_progress_log_index = None
     start_new_segment()
     append_install_log("[步骤] 已启动 Android screenrecord。", module="record")
     record_start = datetime.now()
@@ -2015,6 +2041,7 @@ def build_card(parent: ttk.Frame, title: str, subtitle: str, *, wraplength: int 
 
     body = ttk.Frame(frame, style="CardInner.TFrame")
     body.grid(row=1, column=0, sticky="nsew")
+    frame.header = header  # type: ignore[attr-defined]
     return frame, body
 
 
@@ -2024,12 +2051,14 @@ def build_button_bar(parent: ttk.Frame) -> ttk.Frame:
     return bar
 
 
-def bind_log_module_area(widget, module: str) -> None:
+def bind_log_module_area(widget, module: str, *, exclude: set | None = None) -> None:
+    if exclude and widget in exclude:
+        return
     if hasattr(widget, "winfo_class") and widget.winfo_class() in {"TButton", "Button"}:
         return
     widget.bind("<Button-1>", lambda _event, selected_module=module: select_log_module(selected_module), add="+")
     for child in widget.winfo_children():
-        bind_log_module_area(child, module)
+        bind_log_module_area(child, module, exclude=exclude)
 
 
 def build_ui() -> None:
@@ -2217,7 +2246,9 @@ def build_ui() -> None:
     install_log_widget.configure(yscrollcommand=log_scrollbar.set)
     append_install_log("[日志] 安装、解析进度会显示在这里。")
     select_log_module("package")
-    bind_log_module_area(install_card, "package")
+    bind_log_module_area(install_card.header, "package")  # type: ignore[attr-defined]
+    bind_log_module_area(install_actions, "package")
+    bind_log_module_area(path_panel, "package")
 
     footer = ttk.Frame(root_frame, style="Footer.TFrame", padding=(14, 10, 14, 10))
     footer.grid(row=2, column=0, sticky="ew", pady=(14, 0))

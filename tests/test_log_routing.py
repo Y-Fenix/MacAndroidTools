@@ -81,6 +81,17 @@ class LogRoutingTest(unittest.TestCase):
         self.assertIn("<Button-1>", label.bindings)
         self.assertNotIn("<Button-1>", button.bindings)
 
+    def test_module_click_binding_skips_excluded_log_area(self) -> None:
+        text_widget = FakeWidget("Text")
+        console_frame = FakeWidget("Frame", [text_widget])
+        card = FakeWidget("TFrame", [console_frame])
+
+        androidtools.bind_log_module_area(card, "package", exclude={console_frame})
+
+        self.assertIn("<Button-1>", card.bindings)
+        self.assertNotIn("<Button-1>", console_frame.bindings)
+        self.assertNotIn("<Button-1>", text_widget.bindings)
+
 
 if __name__ == "__main__":
     unittest.main()
