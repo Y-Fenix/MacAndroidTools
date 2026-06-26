@@ -129,14 +129,24 @@ GREEN = "#E5F6ED"
 GREEN_HOVER = "#D5F0E2"
 GREEN_PRESSED = "#BFE5D0"
 GREEN_TEXT = "#17663A"
+TEAL = "#0F766E"
+TEAL_HOVER = "#0D9488"
+TEAL_PRESSED = "#115E59"
 
 LOG_MODULES = {
     "app_log": "日志与 IDFA",
     "screenshot": "截图",
     "record": "录屏",
+    "firebase": "Firebase DebugView",
     "package": "安装包",
 }
-
+ACTIVE_LOG_STYLES = {
+    "app_log": "ActiveLogApp.TLabel",
+    "screenshot": "ActiveLogScreenshot.TLabel",
+    "record": "ActiveLogRecord.TLabel",
+    "firebase": "ActiveLogFirebase.TLabel",
+    "package": "ActiveLogPackage.TLabel",
+}
 record_proc: subprocess.Popen | None = None
 record_start: datetime | None = None
 timer_job: str | None = None
@@ -151,13 +161,18 @@ status_label: ttk.Label | None = None
 record_button: ttk.Button | None = None
 adb_path: str | None = None
 selected_file_var: tk.StringVar | None = None
+firebase_file_var: tk.StringVar | None = None
+firebase_package_var: tk.StringVar | None = None
 install_log_widget: tk.Text | None = None
 active_log_var: tk.StringVar | None = None
+active_log_label: ttk.Label | None = None
 current_log_module = "package"
 module_log_history: dict[str, list[str]] = {key: [] for key in LOG_MODULES}
 apk_button: ttk.Button | None = None
 aab_button: ttk.Button | None = None
 parse_button: ttk.Button | None = None
+firebase_button: ttk.Button | None = None
+firebase_debug_package = ""
 ui_root: tk.Tk | None = None
 
 
@@ -414,6 +429,8 @@ def select_log_module(module: str) -> None:
     current_log_module = module
     if active_log_var is not None:
         active_log_var.set(f"当前日志：{LOG_MODULES[module]}")
+    if active_log_label is not None:
+        active_log_label.configure(style=ACTIVE_LOG_STYLES.get(module, "ActiveLogPackage.TLabel"))
     render_active_log()
 
 
@@ -465,6 +482,112 @@ def set_install_buttons_enabled(enabled: bool) -> None:
     for button in (apk_button, aab_button, parse_button):
         if button is not None:
             button.state(state)
+
+
+def set_firebase_button_enabled(enabled: bool) -> None:
+    if firebase_button is not None:
+        firebase_button.state(["!disabled"] if enabled else ["disabled"])
+
+
+def build_firebase_debugview_command(package_name: str) -> list[str]:
+    return ["shell", "setprop", "debug.firebase.analytics.app", package_name]
+
+
+def resolve_firebase_debug_package(package_path: Path) -> str:
+    suffix = package_path.suffix.lower()
+    if suffix == ".apk":
+        metadata = parse_apk_metadata(package_path)
+    elif suffix == ".aab":
+        metadata = parse_aab_metadata(package_path)
+    elif suffix == ".apks":
+        metadata = parse_apks_metadata(package_path)
+    else:
+        raise RuntimeError("Firebase DebugView 仅支持 APK / AAB / APKS 文件。")
+
+    package_name = metadata.get("bundle_ID", "-").strip()
+    if not package_name or package_name == "-":
+        raise RuntimeError("未能从所选文件中解析包名。")
+    return package_name
+
+
+def update_firebase_target(package_path: Path, package_name: str) -> None:
+    global firebase_debug_package
+    firebase_debug_package = package_name
+    if firebase_file_var is not None:
+        firebase_file_var.set(f"当前文件：{package_path}")
+    if firebase_package_var is not None:
+        firebase_package_var.set(f"当前包名：{package_name}")
+    set_firebase_button_enabled(True)
+
+
+def run_select_firebase_debug_package(package_path: Path) -> None:
+    global firebase_debug_package
+    select_log_module("firebase")
+    append_install_log("", module="firebase")
+    append_install_log(f"[选择] Firebase DebugView 文件：{package_path}", module="firebase")
+    try:
+        package_name = resolve_firebase_debug_package(package_path)
+        update_firebase_target(package_path, package_name)
+        append_install_log(f"[目标] 包名：{package_name}", module="firebase")
+        set_status(f"已选择 Firebase DebugView：{package_name}", tone="success")
+    except Exception as exc:
+        if firebase_file_var is not None:
+            firebase_file_var.set("当前文件：未选择 Android 安装包")
+        if firebase_package_var is not None:
+            firebase_package_var.set("当前包名：未选择")
+        firebase_debug_package = ""
+        set_firebase_button_enabled(False)
+        append_install_log(f"[异常] Firebase DebugView 文件解析失败：{exc}", module="firebase")
+        set_status("Firebase DebugView 文件解析失败", tone="error")
+
+
+def choose_firebase_debug_package() -> None:
+    select_log_module("firebase")
+    package_path_str = filedialog.askopenfilename(
+        title="选择 Firebase DebugView 文件",
+        initialdir=str(BASE_DIR),
+        filetypes=[
+            ("Android package", "*.apk *.aab *.apks"),
+            ("Android APK", "*.apk"),
+            ("Android App Bundle", "*.aab"),
+            ("Android APK Set", "*.apks"),
+            ("All Files", "*.*"),
+        ],
+    )
+    if not package_path_str:
+        return
+    run_select_firebase_debug_package(Path(package_path_str))
+
+
+def enable_firebase_debugview() -> None:
+    select_log_module("firebase")
+    package_name = firebase_debug_package.strip()
+    if not package_name and firebase_package_var is not None:
+        current_value = firebase_package_var.get().strip()
+        if current_value.startswith("当前包名："):
+            package_name = current_value.replace("当前包名：", "", 1).strip()
+    if not package_name or package_name == "未选择":
+        append_install_log("[提示] 请先选择 Android 安装包。", module="firebase")
+        set_status("请先选择 Firebase 目标包", tone="error")
+        return
+    if not ensure_adb_ready():
+        append_install_log("[异常] 未找到可用的 Android 设备或 adb。", module="firebase")
+        return
+
+    append_install_log("[选择] 开启 Firebase DebugView", module="firebase")
+    append_install_log(f"[目标] 包名：{package_name}", module="firebase")
+    command = build_firebase_debugview_command(package_name)
+    append_install_log("[命令] adb " + " ".join(command), module="firebase")
+    result = run_adb(command)
+    output = (result.stdout + result.stderr).decode(errors="ignore").strip()
+    if result.returncode == 0:
+        append_install_log(f"[完成] Firebase DebugView 已开启：{package_name}", module="firebase")
+        append_install_log("[提示] 重新打开目标 App 后即可在 Firebase DebugView 看到事件。", module="firebase")
+        set_status(f"Firebase DebugView 已开启：{package_name}", tone="success")
+        return
+
+    append_install_log(output or f"[失败] setprop 退出码：{result.returncode}", module="firebase")
+    set_status("Firebase DebugView 开启失败", tone="error")
 
 
 def format_size(size_bytes: int) -> str:
@@ -2045,9 +2168,9 @@ def build_card(parent: ttk.Frame, title: str, subtitle: str, *, wraplength: int 
     return frame, body
 
 
-def build_button_bar(parent: ttk.Frame) -> ttk.Frame:
+def build_button_bar(parent: ttk.Frame, columns: int = 3) -> ttk.Frame:
     bar = ttk.Frame(parent, style="CardInner.TFrame")
-    bar.columnconfigure((0, 1, 2), weight=1, uniform="action")
+    bar.columnconfigure(tuple(range(columns)), weight=1, uniform="action")
     return bar
 
 
@@ -2062,7 +2185,7 @@ def bind_log_module_area(widget, module: str, *, exclude: set | None = None) -> 
 
 
 def build_ui() -> None:
-    global status_var, status_label, record_button, selected_file_var, install_log_widget, active_log_var, apk_button, aab_button, parse_button, ui_root
+    global status_var, status_label, record_button, selected_file_var, firebase_file_var, firebase_package_var, install_log_widget, active_log_var, active_log_label, apk_button, aab_button, parse_button, firebase_button, ui_root
 
     if platform.system() != "Darwin":
         show_startup_error("系统不支持", "这个版本仅面向 macOS。")
@@ -2106,6 +2229,11 @@ def build_ui() -> None:
     style.configure("Caption.TLabel", background=UI_BG, foreground=UI_SUBTEXT, font=("SF Pro Text", 12))
     style.configure("CardTitle.TLabel", background=UI_PANEL, foreground=UI_TEXT, font=("SF Pro Display", 15, "bold"))
     style.configure("CardCaption.TLabel", background=UI_PANEL, foreground=UI_SUBTEXT, font=("SF Pro Text", 11))
+    style.configure("ActiveLogApp.TLabel", background=UI_PANEL, foreground=BLUE, font=("SF Pro Text", 11, "bold"))
+    style.configure("ActiveLogScreenshot.TLabel", background=UI_PANEL, foreground=BLUE_HOVER, font=("SF Pro Text", 11, "bold"))
+    style.configure("ActiveLogRecord.TLabel", background=UI_PANEL, foreground=DANGER, font=("SF Pro Text", 11, "bold"))
+    style.configure("ActiveLogFirebase.TLabel", background=UI_PANEL, foreground=TEAL, font=("SF Pro Text", 11, "bold"))
+    style.configure("ActiveLogPackage.TLabel", background=UI_PANEL, foreground=GREEN_TEXT, font=("SF Pro Text", 11, "bold"))
     style.configure("StatusNeutral.TLabel", background=UI_PANEL_ALT, foreground=UI_SUBTEXT, font=("SF Pro Text", 11))
     style.configure("StatusSuccess.TLabel", background=UI_PANEL_ALT, foreground=STATUS_SUCCESS, font=("SF Pro Text", 11, "bold"))
     style.configure("StatusError.TLabel", background=UI_PANEL_ALT, foreground=STATUS_ERROR, font=("SF Pro Text", 11, "bold"))
@@ -2114,10 +2242,12 @@ def build_ui() -> None:
     style.configure("Action.TButton", font=("SF Pro Text", 11, "bold"), padding=(14, 9))
     style.configure("Danger.TButton", font=("SF Pro Text", 11, "bold"), padding=(14, 9))
     style.configure("Install.TButton", font=("SF Pro Text", 11, "bold"), padding=(14, 9))
+    style.configure("Debug.TButton", font=("SF Pro Text", 11, "bold"), padding=(14, 9))
     style.configure("Secondary.TButton", font=("SF Pro Text", 11), padding=(14, 9))
     style.map("Action.TButton", background=[("pressed", BLUE_PRESSED), ("active", BLUE_HOVER), ("!disabled", BLUE)], foreground=[("!disabled", "#FFFFFF")])
     style.map("Danger.TButton", background=[("pressed", DANGER_PRESSED), ("active", DANGER_HOVER), ("!disabled", DANGER)], foreground=[("!disabled", "#FFFFFF")])
     style.map("Install.TButton", background=[("pressed", GREEN_PRESSED), ("active", GREEN_HOVER), ("!disabled", GREEN)], foreground=[("!disabled", GREEN_TEXT)])
+    style.map("Debug.TButton", background=[("pressed", TEAL_PRESSED), ("active", TEAL_HOVER), ("!disabled", TEAL)], foreground=[("!disabled", "#FFFFFF")])
     style.map("Secondary.TButton", background=[("pressed", SOFT_BLUE_PRESSED), ("active", SOFT_BLUE_HOVER), ("!disabled", SOFT_BLUE)], foreground=[("!disabled", BLUE)])
 
     root_frame = ttk.Frame(root, style="Root.TFrame", padding=(22, 18, 22, 16))
@@ -2134,7 +2264,7 @@ def build_ui() -> None:
     ttk.Label(header, text="Android 工具箱", style="Title.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 0))
     ttk.Label(
         header,
-        text="日志提取、广告 ID 输出、截图录屏、安装与包体解析集中在一个工作台。",
+        text="日志提取、广告 ID 输出、截图录屏、Firebase DebugView、安装与包体解析集中在一个工作台。",
         style="Subtitle.TLabel",
     ).grid(row=2, column=0, sticky="w", pady=(5, 0))
 
@@ -2162,29 +2292,51 @@ def build_ui() -> None:
     ttk.Button(log_actions, text="打开日志目录", style="Secondary.TButton", command=lambda: run_with_log_module("app_log", lambda: open_folder(LOG_DIR))).grid(row=0, column=2, sticky="ew")
     bind_log_module_area(log_card, "app_log")
 
-    shot_card, shot_body = build_card(left_column, "截图", "从已连接 Android 设备抓取当前画面并保存为 PNG。", wraplength=460)
-    shot_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
-    shot_actions = build_button_bar(shot_body)
-    shot_actions.grid(row=0, column=0, sticky="ew")
-    ttk.Button(shot_actions, text="立即截图", style="Action.TButton", command=take_screenshot).grid(row=0, column=0, sticky="ew", padx=(0, 10))
-    ttk.Button(shot_actions, text="打开截图目录", style="Secondary.TButton", command=lambda: run_with_log_module("screenshot", lambda: open_folder(SCREENSHOT_DIR))).grid(row=0, column=1, sticky="ew", padx=(0, 10))
-    ttk.Label(shot_actions, text="", style="CardCaption.TLabel").grid(row=0, column=2, sticky="ew")
-    bind_log_module_area(shot_card, "screenshot")
+    media_card, media_body = build_card(left_column, "截图与录屏", "从已连接 Android 设备抓取当前画面，或分段录制屏幕后自动拉取 MP4 文件到本地。", wraplength=460)
+    media_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+    screenshot_row = ttk.Frame(media_body, style="CardInner.TFrame")
+    screenshot_row.grid(row=0, column=0, sticky="ew")
+    screenshot_row.columnconfigure(0, weight=1, uniform="media")
+    screenshot_row.columnconfigure(1, weight=1, uniform="media")
+    screenshot_actions = build_button_bar(screenshot_row)
+    screenshot_actions.grid(row=0, column=0, columnspan=2, sticky="ew")
+    ttk.Button(screenshot_actions, text="立即截图", style="Action.TButton", command=take_screenshot).grid(row=0, column=0, sticky="ew", padx=(0, 10))
+    ttk.Button(screenshot_actions, text="截图目录", style="Secondary.TButton", command=lambda: run_with_log_module("screenshot", lambda: open_folder(SCREENSHOT_DIR))).grid(row=0, column=1, sticky="ew", padx=(0, 10))
+    ttk.Label(screenshot_actions, text="", style="CardCaption.TLabel").grid(row=0, column=2, sticky="ew")
+    bind_log_module_area(screenshot_row, "screenshot")
 
-    record_card, record_body = build_card(left_column, "录屏", "分段录制 Android 屏幕，停止后自动拉取 MP4 文件到本地。", wraplength=460)
-    record_card.grid(row=2, column=0, sticky="ew")
-    record_actions = build_button_bar(record_body)
-    record_actions.grid(row=0, column=0, sticky="ew")
+    record_row = ttk.Frame(media_body, style="CardInner.TFrame")
+    record_row.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+    record_row.columnconfigure(0, weight=1, uniform="media")
+    record_row.columnconfigure(1, weight=1, uniform="media")
+    record_actions = build_button_bar(record_row)
+    record_actions.grid(row=0, column=0, columnspan=2, sticky="ew")
     record_button = ttk.Button(record_actions, text="开始录屏", style="Action.TButton", command=toggle_recording)
     record_button.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-    ttk.Button(record_actions, text="打开录屏目录", style="Secondary.TButton", command=lambda: run_with_log_module("record", lambda: open_folder(RECORD_DIR))).grid(row=0, column=1, sticky="ew", padx=(0, 10))
+    ttk.Button(record_actions, text="录屏目录", style="Secondary.TButton", command=lambda: run_with_log_module("record", lambda: open_folder(RECORD_DIR))).grid(row=0, column=1, sticky="ew", padx=(0, 10))
     ttk.Label(record_actions, text="", style="CardCaption.TLabel").grid(row=0, column=2, sticky="ew")
-    bind_log_module_area(record_card, "record")
+    bind_log_module_area(record_row, "record")
+
+    firebase_card, firebase_body = build_card(
+        left_column,
+        "Firebase DebugView",
+        "选择 APK / AAB / APKS 提取包名后，开启实时 DebugView。",
+        wraplength=460,
+    )
+    firebase_card.grid(row=2, column=0, sticky="ew")
+    firebase_body.columnconfigure(0, weight=1)
+    firebase_actions = build_button_bar(firebase_body)
+    firebase_actions.grid(row=0, column=0, sticky="ew")
+    ttk.Button(firebase_actions, text="选择文件", style="Action.TButton", command=choose_firebase_debug_package).grid(row=0, column=0, sticky="ew", padx=(0, 10))
+    firebase_button = ttk.Button(firebase_actions, text="开启 DebugView", style="Debug.TButton", command=enable_firebase_debugview)
+    firebase_button.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+    ttk.Label(firebase_actions, text="", style="CardCaption.TLabel").grid(row=0, column=2, sticky="ew")
+    bind_log_module_area(firebase_card, "firebase")
 
     install_card, install_body = build_card(
         content,
         "模块运行日志",
-        "点击左侧或安装包操作后，这里只显示当前模块的执行记录。",
+        "点击左侧模块或安装包操作后，这里只显示当前模块的执行记录。",
         wraplength=480,
     )
     install_card.grid(row=0, column=1, sticky="nsew")
@@ -2210,7 +2362,12 @@ def build_ui() -> None:
     ttk.Label(path_panel, textvariable=selected_file_var, style="Path.TLabel", wraplength=430, justify="left").grid(row=1, column=0, sticky="ew", pady=(4, 0))
 
     active_log_var = tk.StringVar(value=f"当前日志：{LOG_MODULES[current_log_module]}")
-    ttk.Label(install_body, textvariable=active_log_var, style="CardCaption.TLabel").grid(row=2, column=0, sticky="w", pady=(0, 8))
+    active_log_label = ttk.Label(
+        install_body,
+        textvariable=active_log_var,
+        style=ACTIVE_LOG_STYLES.get(current_log_module, "ActiveLogPackage.TLabel"),
+    )
+    active_log_label.grid(row=2, column=0, sticky="w", pady=(0, 8))
 
     console_panel = tk.Frame(
         install_body,
@@ -2253,7 +2410,7 @@ def build_ui() -> None:
     footer = ttk.Frame(root_frame, style="Footer.TFrame", padding=(14, 10, 14, 10))
     footer.grid(row=2, column=0, sticky="ew", pady=(14, 0))
     footer.columnconfigure(0, weight=1)
-    status_var = tk.StringVar(value="状态 · 等待操作（支持 Android/iOS 日志提取 / IDFA输出 / 截图 / 录屏 / 安装 / 解析）")
+    status_var = tk.StringVar(value="状态 · 等待操作（支持 Android/iOS 日志提取 / IDFA输出 / 截图录屏 / Firebase DebugView / 安装 / 解析）")
     status_label = ttk.Label(footer, textvariable=status_var, style="StatusNeutral.TLabel")
     status_label.grid(row=0, column=0, sticky="w")
 

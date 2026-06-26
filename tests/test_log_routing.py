@@ -18,6 +18,14 @@ class FakeText:
         self.seen = True
 
 
+class FakeLabel:
+    def __init__(self) -> None:
+        self.configured: dict[str, object] = {}
+
+    def configure(self, **kwargs) -> None:
+        self.configured.update(kwargs)
+
+
 class FakeWidget:
     def __init__(self, widget_class: str = "Frame", children: list["FakeWidget"] | None = None) -> None:
         self.widget_class = widget_class
@@ -39,12 +47,14 @@ class LogRoutingTest(unittest.TestCase):
         self.widget = FakeText()
         androidtools.install_log_widget = self.widget
         androidtools.active_log_var = None
+        androidtools.active_log_label = None
         androidtools.current_log_module = "package"
         androidtools.module_log_history = {key: [] for key in androidtools.LOG_MODULES}
 
     def tearDown(self) -> None:
         androidtools.install_log_widget = None
         androidtools.active_log_var = None
+        androidtools.active_log_label = None
 
     def test_appends_only_render_for_active_module(self) -> None:
         androidtools.append_module_log("screenshot", "[选择] 立即截图")
@@ -67,6 +77,16 @@ class LogRoutingTest(unittest.TestCase):
         androidtools.select_log_module("package")
         self.assertIn("demo.apk", self.widget.content)
         self.assertNotIn("开始录屏", self.widget.content)
+
+    def test_active_log_label_style_follows_selected_module(self) -> None:
+        label = FakeLabel()
+        androidtools.active_log_label = label
+
+        androidtools.select_log_module("firebase")
+        self.assertEqual("ActiveLogFirebase.TLabel", label.configured["style"])
+
+        androidtools.select_log_module("record")
+        self.assertEqual("ActiveLogRecord.TLabel", label.configured["style"])
 
     def test_module_click_binding_includes_card_text_but_skips_buttons(self) -> None:
         button = FakeWidget("TButton")
